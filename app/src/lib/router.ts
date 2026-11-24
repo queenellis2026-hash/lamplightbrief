@@ -22,7 +22,7 @@ import { InferenceMode } from "firebase/ai";
 export type TaskKind = "draft" | "completeness" | "privacy-scan" | "rewrite" | "deep-audit";
 
 export interface DetectedIdentifier {
-  kind: "email" | "phone" | "payment-handle" | "url-with-token" | "address" | "crypto-address";
+  kind: "email" | "phone" | "payment-handle" | "url-with-token" | "address" | "crypto-address" | "money-amount";
   value: string;
   index: number;
 }
@@ -41,6 +41,10 @@ export interface RoutingDecision {
 
 const PATTERNS: { kind: DetectedIdentifier["kind"]; re: RegExp }[] = [
   { kind: "email", re: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g },
+  {
+    kind: "money-amount",
+    re: /\$\s?\d[\d,]*(?:\.\d{2})?\b|\b\d[\d,]*(?:\.\d{2})?\s?(?:USD|dollars?)\b|\b\d[\d,]*(?:\.\d{2})?\s?(?:\/|per\s)(?:hr|hour)\b/gi,
+  },
   { kind: "phone", re: /(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}/g },
   { kind: "payment-handle", re: /(\$[a-zA-Z][a-zA-Z0-9_-]{2,}|@[a-zA-Z][a-zA-Z0-9_]{2,}\s*(venmo|cash ?app|zelle|paypal))/gi },
   { kind: "url-with-token", re: /https?:\/\/\S*(token|key|sig|auth)=\S+/gi },

@@ -228,6 +228,21 @@ const briefSchema = Schema.object({
   },
 });
 
+/** True when a draft result carries no usable brief content at all. */
+function draftIsEmpty(r: RunResult): boolean {
+  const j = r.json as Record<string, unknown> | undefined;
+  if (j && typeof j === "object") {
+    const bt = typeof j.briefText === "string" ? j.briefText.trim() : "";
+    if (bt) return false;
+    const anyField = Object.values(j).some((v) =>
+      typeof v === "string" ? v.trim().length > 0 : Array.isArray(v) && v.length > 0,
+    );
+    if (anyField) return false;
+    return r.text.trim().length === 0 || r.text.trim() === "{}";
+  }
+  return r.text.trim().length === 0;
+}
+
 export async function draftBrief(notes: string, gate?: CloudGate): Promise<RunResult> {
   const routed = route("draft", notes);
   const { decision, text, restore } = await prepareLocalFirst(routed, notes, gate);
@@ -237,7 +252,26 @@ export async function draftBrief(notes: string, gate?: CloudGate): Promise<RunRe
     "Return JSON only, matching the schema. briefText is the full brief in plain language. " +
     "Leave a field as an empty string or empty array when the notes do not say — never invent terms.\n\nNOTES:\n" +
     text;
-  return restored(await runModel(model, decision, prompt, text), restore);
+  const result = restored(await runModel(model, decision, prompt, text), restore);
+  if (!draftIsEmpty(result)) return result;
+  // The structured result came back empty (seen live under the gated cloud
+  // path): retry once as a plain-text brief so the panel always shows the
+  // draft — never a silent blank.
+  const plainModel = requireModel(decision.mode);
+  const plainPrompt =
+    "You turn rough job notes into a clean escrow job brief a neutral third party could judge. " +
+    "Write the full brief in plain language: deliverable, deadline, budget/payment terms, acceptance " +
+    "criteria, revision terms, and what evidence the worker must deliver. Do not invent terms the notes " +
+    "do not state. Return the brief text only.\n\nNOTES:\n" +
+    text;
+  const retry = restored(await runModel(plainModel, decision, plainPrompt, text), restore);
+  return {
+    ...retry,
+    decision: {
+      ...retry.decision,
+      reason: retry.decision.reason + " Structured draft came back empty — retried as plain text.",
+    },
+  };
 }
 
 // --- Task 2: completeness checklist (on-device preferred, structured) -----
@@ -297,6 +331,15 @@ export async function privacyScan(text: string): Promise<RunResult> {
 const auditSchema = Schema.object({
   properties: {
     score: Schema.number(),
+    categoryScores: Schema.object({
+      properties: {
+        deliverableClarity: Schema.number(),
+        acceptanceCriteria: Schema.number(),
+        timeline: Schema.number(),
+        paymentEvidence: Schema.number(),
+        revisionScope: Schema.number(),
+      },
+    }),
     flags: Schema.array({
       items: Schema.object({
         properties: {
@@ -356,8 +399,26 @@ function normalizeAuditJson(json: unknown, sourceText?: string): unknown {
     };
   });
   const scoreRaw = pick(j, ["score", "overallScore", "disputeReadinessScore", "dispute_readiness_score", "rating", "totalScore"]);
+  const cs = pick(j, ["categoryScores", "category_scores", "breakdown", "scoresByCategory"]) as
+    | Record<string, unknown>
+    | undefined;
+  const num = (v: unknown): number | undefined => {
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const categoryScores =
+    cs && typeof cs === "object"
+      ? {
+          deliverableClarity: num(pick(cs, ["deliverableClarity", "deliverable_clarity", "deliverable"])),
+          acceptanceCriteria: num(pick(cs, ["acceptanceCriteria", "acceptance_criteria", "acceptance"])),
+          timeline: num(pick(cs, ["timeline", "timelineSpecificity"])),
+          paymentEvidence: num(pick(cs, ["paymentEvidence", "payment_evidence", "paymentAndEvidence"])),
+          revisionScope: num(pick(cs, ["revisionScope", "revision_scope", "revisionAndScope"])),
+        }
+      : undefined;
   return {
     score: typeof scoreRaw === "number" ? scoreRaw : Number(scoreRaw ?? NaN),
+    ...(categoryScores ? { categoryScores } : {}),
     flags,
     verdict: String(pick(j, ["verdict", "summary", "overall"]) ?? ""),
   };
@@ -391,8 +452,11 @@ export async function deepAudit(
     "evidence terms 20; revision and scope terms 15. The score is the sum of points earned across the five " +
     "areas. Flag every clause that is ambiguous, unmeasurable, contradictory, missing evidence terms, or " +
     "open to scope creep. For each flag give the quoted clause, the problem, a concrete rewrite, and " +
-    "severity (high/medium/low). Return JSON only, with exactly these keys: score (number), verdict " +
-    "(string), flags (array of objects with exactly these keys: clause, problem, rewrite, severity).\n\nBRIEF:\n" +
+    "severity (high/medium/low). Also give categoryScores: points earned in each rubric area " +
+    "(deliverableClarity out of 25, acceptanceCriteria out of 25, timeline out of 15, paymentEvidence " +
+    "out of 20, revisionScope out of 15; they must sum to the score). Return JSON only, with exactly " +
+    "these keys: score (number), categoryScores (object), verdict (string), flags (array of objects " +
+    "with exactly these keys: clause, problem, rewrite, severity).\n\nBRIEF:\n" +
     redacted;
   const model = requireModel(decision.mode, auditSchema as unknown as object);
   try {

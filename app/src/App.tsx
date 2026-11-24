@@ -43,6 +43,21 @@ interface AuditFlag {
   severity: string;
 }
 
+interface CategoryScores {
+  deliverableClarity?: number;
+  acceptanceCriteria?: number;
+  timeline?: number;
+  paymentEvidence?: number;
+  revisionScope?: number;
+}
+
+interface AuditResult {
+  score: number;
+  flags: AuditFlag[];
+  verdict: string;
+  categoryScores?: CategoryScores;
+}
+
 const SAMPLES: { label: string; text: string }[] = [
   {
     label: "Sample: logo job (vague)",
@@ -73,7 +88,7 @@ export default function App() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const [completeness, setCompleteness] = useState<{ present: string[]; missing: string[]; summary: string } | null>(null);
   const [privacy, setPrivacy] = useState<{ findings: { kind: string; excerpt: string; why: string }[]; safeToSendToCloud: boolean; summary: string } | null>(null);
-  const [audit, setAudit] = useState<{ score: number; flags: AuditFlag[]; verdict: string } | null>(null);
+  const [audit, setAudit] = useState<AuditResult | null>(null);
   const [auditSentText, setAuditSentText] = useState<string | null>(null);
   const [appliedIdx, setAppliedIdx] = useState<Set<number>>(new Set());
   const [climbNote, setClimbNote] = useState<string | null>(null);
@@ -134,7 +149,7 @@ export default function App() {
       const r = await deepAudit(item.briefText, { preConfirmed: true });
       localStorage.removeItem(QUEUE_KEY);
       setQueuedAudit(null);
-      if (r.json) setAudit(r.json as { score: number; flags: AuditFlag[]; verdict: string });
+      if (r.json) setAudit(r.json as AuditResult);
       setAuditSentText(r.sentText);
       pushLog({
         at: new Date().toLocaleTimeString(),
@@ -499,9 +514,23 @@ export default function App() {
                     const lines = Object.entries(j)
                       .filter(([, v]) => v !== "" && !(Array.isArray(v) && v.length === 0))
                       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join("; ") : String(v)}`);
-                    setBrief(lines.join("\n"));
-                  } else {
+                    // Never leave the panel silently empty after a
+                    // completed call: fall back to the raw response, and
+                    // if even that is empty, say so visibly.
+                    const next = lines.join("\n").trim() || r.text.trim();
+                    if (next) {
+                      setBrief(next);
+                    } else {
+                      setError(
+                        "The draft came back empty — nothing was put in the brief panel. Try again, or add a little more detail to your notes.",
+                      );
+                    }
+                  } else if (r.text.trim()) {
                     setBrief(r.text);
+                  } else {
+                    setError(
+                      "The draft came back empty — nothing was put in the brief panel. Try again, or add a little more detail to your notes.",
+                    );
                   }
                 })
               }
@@ -659,7 +688,7 @@ export default function App() {
                   return;
                 }
                 run("Deep audit", () => deepAudit(brief, { gate: cloudGate }), (r) => {
-                  if (r.json) setAudit(r.json as { score: number; flags: AuditFlag[]; verdict: string });
+                  if (r.json) setAudit(r.json as AuditResult);
                   setAuditSentText(r.sentText);
                   setAppliedIdx(new Set());
                   setClimbNote(null);
@@ -705,6 +734,14 @@ export default function App() {
             <div className="result">
               <h3>Dispute-readiness: {audit.score}/100</h3>
               <p>{audit.verdict}</p>
+              {audit.categoryScores && (
+                <p className="hint">
+                  Deliverable clarity {audit.categoryScores.deliverableClarity ?? "—"}/25 · Acceptance criteria{" "}
+                  {audit.categoryScores.acceptanceCriteria ?? "—"}/25 · Timeline {audit.categoryScores.timeline ?? "—"}
+                  /15 · Payment &amp; evidence {audit.categoryScores.paymentEvidence ?? "—"}/20 · Revision &amp; scope{" "}
+                  {audit.categoryScores.revisionScope ?? "—"}/15
+                </p>
+              )}
               {audit.flags.some((f, i) => f.severity.toLowerCase() === "high" && !appliedIdx.has(i)) && (
                 <div className="row">
                   <button disabled={busy !== null} onClick={() => void applyAllHigh()}>
