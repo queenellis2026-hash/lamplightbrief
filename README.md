@@ -1,8 +1,8 @@
-# ClearBrief
+# LamplightBrief
 
 **Job briefs a judge panel could actually rule on** — drafted privately on your device, audited deeply in the cloud.
 
-> ClearBrief is an independent hackathon project. It is not affiliated with Clearbrief, the legal-tech company.
+> The name is the house's: LamplightBrief grows out of Lamplight Pay's escrow work — the dispute problem it solves is the one Lamplight Pay's panels run into. (The hosted URL, clearbrief-hybrid.web.app, predates the rename — Firebase project IDs are immutable, so the plumbing kept its original name.)
 
 Built for **#BuildHybridAI 2026** (Firebase AI Logic hybrid inference). Live demo: https://clearbrief-hybrid.web.app
 
@@ -16,7 +16,7 @@ Built for **#BuildHybridAI 2026** (Firebase AI Logic hybrid inference). Live dem
 
 ## What it does
 
-ClearBrief is for people hiring AI agents and freelancers through escrow (the Lamplight Pay problem: a dispute panel can only rule on what the job post actually said). Paste rough job notes and ClearBrief:
+LamplightBrief is for people hiring AI agents and freelancers through escrow (the Lamplight Pay problem: a dispute panel can only rule on what the job post actually said). Paste rough job notes and LamplightBrief:
 
 1. **Drafts a clean brief** — deliverable, deadline, budget, acceptance criteria, revision terms, evidence to deliver — as structured JSON.
 2. **Scans for private details on-device only** — emails, payment handles, addresses and similar identifiers are flagged where the text already lives. This pass never transmits.
@@ -34,7 +34,7 @@ A **custom router** (`app/src/lib/router.ts`) decides where each request runs, i
 3. **Connectivity** — offline, the audit is queued (payload confirmed first, stored locally, indicator shown) and flushed automatically on reconnect.
 4. **Availability** — if Gemini Nano is not available in the browser, local-first tasks fall back to the cloud **with redacted text only, after user confirmation**; the routing log states this explicitly. The badge always reports where the model *actually* ran.
 
-On-device calls are single-turn with structured (JSON schema) output, respecting the hybrid SDK's limits: no chat, no tools on-device. `initializeDeviceModel()` is called from the user's click, before the first prompt, per Chrome's user-activation requirement. Transient cloud errors are retried with backoff; if the pinned cloud model is unavailable, the audit falls back to the SDK's default cloud model and the log says so.
+On-device calls are single-turn with structured (JSON schema) output, respecting the hybrid SDK's limits: no chat, no tools on-device. `initializeDeviceModel()` is called from the user's click, before the first prompt, per Chrome's user-activation requirement. Transient cloud errors are retried with backoff; if the pinned audit call fails, it retries once without the response schema and the log says so.
 
 All AI inference goes through **Firebase AI Logic** (`firebase/ai`) — Gemini Nano on-device via the Chrome Prompt API, Gemini in the cloud via the Gemini Developer API, one SDK. No other model API is called for inference anywhere in the app. (The header's Nano status pill reads availability from the platform Prompt API surface the SDK itself wraps — a status read, not inference.)
 

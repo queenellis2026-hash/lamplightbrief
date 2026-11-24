@@ -75,7 +75,7 @@ export default function App() {
   const [privacy, setPrivacy] = useState<{ findings: { kind: string; excerpt: string; why: string }[]; safeToSendToCloud: boolean; summary: string } | null>(null);
   const [audit, setAudit] = useState<{ score: number; flags: AuditFlag[]; verdict: string } | null>(null);
   const [auditSentText, setAuditSentText] = useState<string | null>(null);
-  const [appliedClauses, setAppliedClauses] = useState<Set<string>>(new Set());
+  const [appliedIdx, setAppliedIdx] = useState<Set<number>>(new Set());
   const [climbNote, setClimbNote] = useState<string | null>(null);
   const [privacyGuidance, setPrivacyGuidance] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -215,18 +215,40 @@ export default function App() {
 
   // Score-climb loop: apply every remaining high-severity rewrite, then
   // automatically re-check completeness so the improvement is visible.
+  // One gate confirmation covers the batch (payloads are successive
+  // redactions of the same brief).
   const applyAllHigh = async () => {
     if (!audit) return;
-    const highs = audit.flags.filter(
-      (f) => f.severity.toLowerCase() === "high" && !appliedClauses.has(f.clause),
-    );
+    const highs = audit.flags
+      .map((f, i) => ({ f, i }))
+      .filter(({ f, i }) => f.severity.toLowerCase() === "high" && !appliedIdx.has(i));
     if (highs.length === 0) return;
+    const status = await deviceModelStatus();
+    if (status !== "available") {
+      const d = route("rewrite", brief);
+      const { redacted } = redactText(brief, d.identifiers);
+      const ok = await cloudGate({
+        task: `rewrite batch (${highs.length} high-severity rewrites)`,
+        redactedText: redacted,
+        identifiers: d.identifiers,
+      });
+      if (!ok) {
+        pushLog({
+          at: new Date().toLocaleTimeString(),
+          task: "Apply rewrites",
+          reason: d.reason,
+          badge: "Failed",
+          error: "Cloud send cancelled — you declined the rewrite batch. Nothing was transmitted.",
+        });
+        return;
+      }
+    }
     let current = brief;
     setBusy("Applying rewrites");
     setError(null);
     try {
-      for (const f of highs) {
-        const r = await applyRewrite(current, f.clause, f.rewrite, cloudGate);
+      for (const { f, i } of highs) {
+        const r = await applyRewrite(current, f.clause, f.rewrite, cloudGate, true);
         pushLog({
           at: new Date().toLocaleTimeString(),
           task: "Apply rewrite",
@@ -238,7 +260,7 @@ export default function App() {
         });
         current = r.text;
         setBrief(current);
-        setAppliedClauses((prev) => new Set(prev).add(f.clause));
+        setAppliedIdx((prev) => new Set(prev).add(i));
       }
       const c = await completenessCheck(current, cloudGate);
       pushLog({
@@ -274,7 +296,7 @@ export default function App() {
 
   const exportBrief = (kind: "md" | "copy") => {
     const lines = [
-      "# Job brief (via ClearBrief)",
+      "# Job brief (via LamplightBrief)",
       "",
       brief,
       ...(audit
@@ -305,7 +327,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "clearbrief-brief.md";
+    a.download = "lamplightbrief-brief.md";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -313,7 +335,7 @@ export default function App() {
   return (
     <div className="page">
       <header>
-        <h1>ClearBrief</h1>
+        <h1>LamplightBrief</h1>
         <p className="tagline">
           Job briefs a judge panel could actually rule on — drafted privately on your device, audited deeply in the
           cloud, with a router that shows its work.
@@ -421,7 +443,7 @@ export default function App() {
               </button>
             </div>
             <p>
-              ClearBrief splits the work between two models by trust: the on-device model handles your raw text
+              LamplightBrief splits the work between two models by trust: the on-device model handles your raw text
               because it never transmits it; the cloud model does the heavy audit but only sees a redacted copy you
               confirm first.
             </p>
@@ -639,7 +661,7 @@ export default function App() {
                 run("Deep audit", () => deepAudit(brief, { gate: cloudGate }), (r) => {
                   if (r.json) setAudit(r.json as { score: number; flags: AuditFlag[]; verdict: string });
                   setAuditSentText(r.sentText);
-                  setAppliedClauses(new Set());
+                  setAppliedIdx(new Set());
                   setClimbNote(null);
                 });
               }}
@@ -683,7 +705,7 @@ export default function App() {
             <div className="result">
               <h3>Dispute-readiness: {audit.score}/100</h3>
               <p>{audit.verdict}</p>
-              {audit.flags.some((f) => f.severity.toLowerCase() === "high" && !appliedClauses.has(f.clause)) && (
+              {audit.flags.some((f, i) => f.severity.toLowerCase() === "high" && !appliedIdx.has(i)) && (
                 <div className="row">
                   <button disabled={busy !== null} onClick={() => void applyAllHigh()}>
                     {busy === "Applying rewrites" ? "Applying…" : "Apply all high-severity rewrites"}
@@ -702,15 +724,15 @@ export default function App() {
                   </p>
                   <button
                     className="ghost"
-                    disabled={busy !== null || appliedClauses.has(f.clause)}
+                    disabled={busy !== null || appliedIdx.has(i)}
                     onClick={() =>
                       run("Apply rewrite", () => applyRewrite(brief, f.clause, f.rewrite, cloudGate), (r) => {
                         setBrief(r.text);
-                        setAppliedClauses((prev) => new Set(prev).add(f.clause));
+                        setAppliedIdx((prev) => new Set(prev).add(i));
                       })
                     }
                   >
-                    {appliedClauses.has(f.clause) ? "Applied ✓" : "Apply this rewrite"}
+                    {appliedIdx.has(i) ? "Applied ✓" : "Apply this rewrite"}
                   </button>
                 </div>
               ))}

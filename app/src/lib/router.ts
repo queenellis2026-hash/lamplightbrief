@@ -1,7 +1,7 @@
 import { InferenceMode } from "firebase/ai";
 
 // ---------------------------------------------------------------------------
-// ClearBrief custom router
+// LamplightBrief custom router
 //
 // Every AI request passes through here BEFORE any model is called. The
 // router decides where the request runs and the UI shows its reasoning in

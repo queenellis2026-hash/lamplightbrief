@@ -3,7 +3,7 @@ import { getAiBackend } from "./firebase";
 import { route, redactText, type DetectedIdentifier, type RoutingDecision } from "./router";
 
 // ---------------------------------------------------------------------------
-// All AI inference in ClearBrief goes through Firebase AI Logic — on-device
+// All AI inference in LamplightBrief goes through Firebase AI Logic — on-device
 // (Gemini Nano via the Chrome Prompt API) and cloud (Gemini via the Gemini
 // Developer API) from the same SDK. No other model API is called anywhere.
 // ---------------------------------------------------------------------------
@@ -24,21 +24,25 @@ function modelFor(mode: InferenceMode, jsonSchema?: object, cloudModel?: string 
   const ai = getAiBackend();
   if (!ai) return null;
   const useCloudModel = cloudModel === undefined ? "gemini-3.5-flash-lite" : cloudModel;
-  return getGenerativeModel(ai, {
-    mode,
-    ...((mode === InferenceMode.PREFER_IN_CLOUD || mode === InferenceMode.ONLY_IN_CLOUD) && useCloudModel
-      ? { inCloudParams: { model: useCloudModel } }
-      : {}),
-    ...(jsonSchema
-      ? {
-          generationConfig: {
-            responseMimeType: "application/json",
-            responseSchema: jsonSchema,
-          },
-        }
-      : {}),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any);
+  const isCloudMode = mode === InferenceMode.PREFER_IN_CLOUD || mode === InferenceMode.ONLY_IN_CLOUD;
+  // HybridParams has NO top-level generationConfig: the schema must travel
+  // inside inCloudParams (cloud) and onDeviceParams.promptOptions
+  // .responseConstraint (on-device). Passing it at the top level — as this
+  // code originally did — means the SDK silently ignores it and the model
+  // free-forms its JSON keys. (Found the hard way, in live verification.)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: Record<string, any> = { mode };
+  if (jsonSchema) {
+    params.onDeviceParams = { promptOptions: { responseConstraint: jsonSchema } };
+    params.inCloudParams = {
+      ...(useCloudModel ? { model: useCloudModel } : {}),
+      generationConfig: { responseMimeType: "application/json", responseSchema: jsonSchema },
+    };
+  } else if (isCloudMode && useCloudModel) {
+    params.inCloudParams = { model: useCloudModel };
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return getGenerativeModel(ai, params as any);
 }
 
 async function runModel(
@@ -167,6 +171,7 @@ async function prepareLocalFirst(
   decision: RoutingDecision,
   text: string,
   gate?: CloudGate,
+  skipGate = false,
 ): Promise<{ decision: RoutingDecision; text: string; restore: (s: string) => string }> {
   const identity = (s: string) => s;
   const status = await deviceModelStatus();
@@ -181,7 +186,7 @@ async function prepareLocalFirst(
       decision.reason +
       " On-device model not available in this browser → cloud fallback: raw text withheld; only the redacted copy is sent, after your confirmation.",
   };
-  if (gate) {
+  if (gate && !skipGate) {
     const ok = await gate({ task: decision.task, redactedText: redacted, identifiers: decision.identifiers });
     if (!ok) throw cancelledError(gatedDecision);
   }
@@ -316,7 +321,7 @@ export interface AuditOutcome extends RunResult {
  * a live pass caught score/clause/rewrite rendering blank because the model
  * answered with different keys.
  */
-function normalizeAuditJson(json: unknown): unknown {
+function normalizeAuditJson(json: unknown, sourceText?: string): unknown {
   if (!json || typeof json !== "object") return json;
   const j = json as Record<string, unknown>;
   const pick = (obj: Record<string, unknown>, keys: string[]): unknown => {
@@ -326,14 +331,31 @@ function normalizeAuditJson(json: unknown): unknown {
   const rawFlags = (pick(j, ["flags", "issues", "problems", "findings"]) as unknown[] | undefined) ?? [];
   const flags = (Array.isArray(rawFlags) ? rawFlags : []).map((f) => {
     const fo = (f ?? {}) as Record<string, unknown>;
+    let clause = String(pick(fo, ["clause", "quote", "text", "excerpt", "issue", "originalText", "originalClause"]) ?? "");
+    const problem = String(pick(fo, ["problem", "description", "explanation", "reason", "analysis"]) ?? "");
+    let rewrite = String(
+      pick(fo, ["rewrite", "suggestedRewrite", "suggestion", "fix", "recommendation", "improvedClause", "revisedClause"]) ?? "",
+    );
+    // Heuristic rescue: the quoted clause is the flag value that appears
+    // verbatim in the brief; the rewrite is the longest remaining string.
+    const stringValues = Object.values(fo).filter((v): v is string => typeof v === "string" && v.length > 0);
+    if (!clause && sourceText) {
+      clause = stringValues.find((v) => v.length > 3 && sourceText.includes(v)) ?? "";
+    }
+    if (!rewrite) {
+      const rest = stringValues
+        .filter((v) => v !== clause && v !== problem)
+        .sort((a, b) => b.length - a.length);
+      rewrite = rest[0] ?? "";
+    }
     return {
-      clause: String(pick(fo, ["clause", "quote", "text", "excerpt", "issue"]) ?? ""),
-      problem: String(pick(fo, ["problem", "description", "explanation", "reason"]) ?? ""),
-      rewrite: String(pick(fo, ["rewrite", "suggestedRewrite", "suggestion", "fix", "recommendation"]) ?? ""),
+      clause,
+      problem,
+      rewrite,
       severity: String(pick(fo, ["severity", "level", "priority"]) ?? "medium"),
     };
   });
-  const scoreRaw = pick(j, ["score", "overallScore", "disputeReadinessScore", "dispute_readiness_score", "rating"]);
+  const scoreRaw = pick(j, ["score", "overallScore", "disputeReadinessScore", "dispute_readiness_score", "rating", "totalScore"]);
   return {
     score: typeof scoreRaw === "number" ? scoreRaw : Number(scoreRaw ?? NaN),
     flags,
@@ -341,8 +363,8 @@ function normalizeAuditJson(json: unknown): unknown {
   };
 }
 
-function normalized(result: RunResult): RunResult {
-  return { ...result, json: result.json === undefined ? undefined : normalizeAuditJson(result.json) };
+function normalized(result: RunResult, sourceText?: string): RunResult {
+  return { ...result, json: result.json === undefined ? undefined : normalizeAuditJson(result.json, sourceText) };
 }
 
 export async function deepAudit(
@@ -369,24 +391,28 @@ export async function deepAudit(
     "evidence terms 20; revision and scope terms 15. The score is the sum of points earned across the five " +
     "areas. Flag every clause that is ambiguous, unmeasurable, contradictory, missing evidence terms, or " +
     "open to scope creep. For each flag give the quoted clause, the problem, a concrete rewrite, and " +
-    "severity (high/medium/low). Return JSON only.\n\nBRIEF:\n" +
+    "severity (high/medium/low). Return JSON only, with exactly these keys: score (number), verdict " +
+    "(string), flags (array of objects with exactly these keys: clause, problem, rewrite, severity).\n\nBRIEF:\n" +
     redacted;
   const model = requireModel(decision.mode, auditSchema as unknown as object);
   try {
     const result = await runModel(model, decision, prompt, redacted);
-    return { ...normalized(result), queued: decision.queuedForCloud };
+    return { ...normalized(result, redacted), queued: decision.queuedForCloud };
   } catch (primaryError) {
-    // If the pinned cloud model is unavailable (retired or overloaded),
-    // fall back to the SDK's default cloud model rather than failing the
-    // audit outright — and say so in the routing log.
-    const fallbackModel = modelFor(decision.mode, auditSchema as unknown as object, null);
+    // Fallback: same named model WITHOUT the response schema — if the
+    // schema or the pinned configuration caused the failure, an
+    // unconstrained call can still answer (normalization cleans up its
+    // JSON). Hybrid mode has no nameless "default model": getGenerativeModel
+    // without a model name throws AI/no-model, which is how an earlier
+    // version of this fallback broke.
+    const fallbackModel = modelFor(decision.mode, undefined, "gemini-3.5-flash-lite");
     if (!fallbackModel) throw primaryError;
     const fallbackDecision: RoutingDecision = {
       ...decision,
-      reason: decision.reason + " Primary cloud model unavailable — fell back to the default cloud model.",
+      reason: decision.reason + " Primary audit call failed — retried without the response schema.",
     };
     const result = await runModel(fallbackModel, fallbackDecision, prompt, redacted);
-    return { ...normalized(result), queued: decision.queuedForCloud };
+    return { ...normalized(result, redacted), queued: decision.queuedForCloud };
   }
 }
 
@@ -397,13 +423,17 @@ export async function applyRewrite(
   clause: string,
   rewrite: string,
   gate?: CloudGate,
+  preConfirmed = false,
 ): Promise<RunResult> {
   const routed = route("rewrite", briefText);
-  const { decision, text, restore } = await prepareLocalFirst(routed, briefText, gate);
+  const { decision, text, restore } = await prepareLocalFirst(routed, briefText, gate, preConfirmed);
   const model = requireModel(decision.mode);
   const prompt =
     `Rewrite this job brief, replacing the clause "${clause}" with this improved version: "${rewrite}". ` +
-    "Change nothing else. Return the full brief text only.\n\nBRIEF:\n" +
+    "Change nothing else. Return the full brief text only, with no heading or label.\n\nBRIEF:\n" +
     text;
-  return restored(await runModel(model, decision, prompt, text), restore);
+  const result = restored(await runModel(model, decision, prompt, text), restore);
+  // The model sometimes echoes the "BRIEF:" label back as a heading — strip
+  // it (repeatedly) so chained rewrites don't stack labels onto the brief.
+  return { ...result, text: result.text.replace(/^\s*(BRIEF:\s*)+/i, "") };
 }
