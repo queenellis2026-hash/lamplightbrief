@@ -87,4 +87,4 @@ Requirements: Node 20+, Chrome desktop **139+** for on-device inference.
 
 - Firebase web config values are public client identifiers; real protection is App Check + Firestore rules, both configured as above.
 - Text inference runs on the free tier within usage limits. No billing account is required.
-- Built Nov 24, 2026 (app, Firebase project, repo); the Devpost submission was finalized Nov 29, 2026.
+- Built Nov 24, 2026 (app, Firebase project, repo); the Devpost submission was prepared Nov 24–29, 2026.

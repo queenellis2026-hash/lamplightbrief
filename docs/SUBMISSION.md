@@ -52,7 +52,7 @@ Also used: **App Check, enforced** for AI Logic (reCAPTCHA Enterprise in product
 
 ### Built during the submission period
 
-The app, router, Firebase project (AI Logic + App Check + Firestore + Hosting) and repo were built on Nov 24, 2026; polish and this submission text were finalized Nov 24–29, 2026. Commit history matches those dates. LamplightBrief grows out of our earlier escrow work (Lamplight Pay, a live agent-escrow product), which supplied the problem — real dispute panels ruling on real job posts — but no code from it is used here.
+The app, router, Firebase project (AI Logic + App Check + Firestore + Hosting) and repo were built on Nov 24, 2026; polish and this submission text were prepared Nov 24–29, 2026. Commit history matches those dates. LamplightBrief grows out of our earlier escrow work (Lamplight Pay, a live agent-escrow product), which supplied the problem — real dispute panels ruling on real job posts — but no code from it is used here.
 
 The name is the house's: LamplightBrief grows out of Lamplight Pay's escrow work — the dispute problem it solves is the one Lamplight Pay's panels run into. (The hosted URL predates the rename; Firebase project IDs are immutable.)
 
@@ -67,4 +67,8 @@ The name is the house's: LamplightBrief grows out of Lamplight Pay's escrow work
 - 0:00–0:30 — The problem: escrow disputes are lost in the job post, not the work. Who LamplightBrief is for.
 - 0:30–1:20 — Draft + privacy scan on-device (Nano initialized live, badge shows On-device); Wi-Fi off, drafting still works.
 - 1:20–2:20 — Wi-Fi on; confirmation panel with redacted payload; deep audit; low score on the vague brief, flags, one-click rewrite, score climbs on re-check.
-- 2:20–3:00 — Save to library; recap: one SDK, two models, each doing the job that matches its trust level.
+- 2:20–3:00 — Save to library; recap: one SDK, two models, each doing the job that matches its trust level.## Elevator pitch (as saved on Devpost — 200-char limit; the longer version was trimmed, "actually" dropped to fit)
+
+LamplightBrief — judge-ready job briefs, drafted on-device, audited in the cloud. Paste rough job notes; get a brief a dispute panel could rule on — with a privacy router that shows its work.
+
+
