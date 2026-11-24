@@ -20,13 +20,14 @@ export interface RunResult {
   sentText: string;
 }
 
-function modelFor(mode: InferenceMode, jsonSchema?: object): GenerativeModel | null {
+function modelFor(mode: InferenceMode, jsonSchema?: object, cloudModel?: string | null): GenerativeModel | null {
   const ai = getAiBackend();
   if (!ai) return null;
+  const useCloudModel = cloudModel === undefined ? "gemini-3.5-flash-lite" : cloudModel;
   return getGenerativeModel(ai, {
     mode,
-    ...(mode === InferenceMode.PREFER_IN_CLOUD || mode === InferenceMode.ONLY_IN_CLOUD
-      ? { inCloudParams: { model: "gemini-3.5-flash-lite" } }
+    ...((mode === InferenceMode.PREFER_IN_CLOUD || mode === InferenceMode.ONLY_IN_CLOUD) && useCloudModel
+      ? { inCloudParams: { model: useCloudModel } }
       : {}),
     ...(jsonSchema
       ? {
@@ -54,7 +55,23 @@ async function runModel(
   } catch {
     // On cloud-only configurations there may be no device model to init.
   }
-  const result = await model.generateContent(prompt);
+  // Retry transient cloud errors (500/503/429 "high demand") with backoff —
+  // the FAQ for this SDK recommends exactly this pattern.
+  let result: Awaited<ReturnType<typeof model.generateContent>> | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      result = await model.generateContent(prompt);
+      break;
+    } catch (e) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      const transient = /500|503|429|high demand|overloaded|try again later/i.test(msg);
+      if (!transient || attempt === 2) throw e;
+      await new Promise((r) => setTimeout(r, attempt === 0 ? 2000 : 5000));
+    }
+  }
+  if (!result) throw lastError;
   const latencyMs = Math.round(performance.now() - started);
   const response = result.response;
   const text = response.text();
@@ -62,7 +79,10 @@ async function runModel(
   const inferenceSource = String((response as any).inferenceSource ?? "unknown");
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    // Cloud fallback models often wrap JSON in a ```json fence even when a
+    // response schema was requested — strip it before parsing.
+    const cleaned = text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
+    json = JSON.parse(cleaned);
   } catch {
     json = undefined;
   }
@@ -186,15 +206,29 @@ export async function deepAudit(briefText: string): Promise<AuditOutcome> {
   const { redacted } = decision.requiresRedaction
     ? redactText(briefText, decision.identifiers)
     : { redacted: briefText };
-  const model = requireModel(decision.mode, auditSchema as unknown as object);
   const prompt =
     "You audit an escrow job brief for dispute-readiness: could a neutral judge panel rule on this brief " +
     "alone if the buyer and worker disagreed? Score 0-100. Flag every clause that is ambiguous, " +
     "unmeasurable, contradictory, missing evidence terms, or open to scope creep. For each flag give the " +
     "quoted clause, the problem, a concrete rewrite, and severity (high/medium/low). Return JSON only.\n\nBRIEF:\n" +
     redacted;
-  const result = await runModel(model, decision, prompt, redacted);
-  return { ...result, queued: decision.queuedForCloud };
+  const model = requireModel(decision.mode, auditSchema as unknown as object);
+  try {
+    const result = await runModel(model, decision, prompt, redacted);
+    return { ...result, queued: decision.queuedForCloud };
+  } catch (primaryError) {
+    // If the pinned cloud model is unavailable (retired or overloaded),
+    // fall back to the SDK's default cloud model rather than failing the
+    // audit outright — and say so in the routing log.
+    const fallbackModel = modelFor(decision.mode, auditSchema as unknown as object, null);
+    if (!fallbackModel) throw primaryError;
+    const fallbackDecision: RoutingDecision = {
+      ...decision,
+      reason: decision.reason + " Primary cloud model unavailable — fell back to the default cloud model.",
+    };
+    const result = await runModel(fallbackModel, fallbackDecision, prompt, redacted);
+    return { ...result, queued: decision.queuedForCloud };
+  }
 }
 
 // --- Task 5: apply a rewrite (on-device preferred) --------------------------
