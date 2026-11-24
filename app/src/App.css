@@ -120,6 +120,7 @@ button.ghost {
   border-top: 1px solid var(--border);
 }
 .log-entry p { margin: 2px 0 0; font-size: 14px; }
+.log-error { color: #b42318; }
 
 .badge {
   flex: 0 0 auto;

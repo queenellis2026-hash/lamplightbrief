@@ -11,6 +11,7 @@ interface LogEntry {
   reason: string;
   badge: string;
   latencyMs?: number;
+  error?: string;
 }
 
 interface AuditFlag {
@@ -85,7 +86,18 @@ export default function App() {
         });
         onOk(r);
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        const d = (e as { decision?: RunResult["decision"] }).decision;
+        if (d) {
+          pushLog({
+            at: new Date().toLocaleTimeString(),
+            task: label,
+            reason: d.reason,
+            badge: "Failed",
+            error: msg,
+          });
+        }
       } finally {
         setBusy(null);
       }
@@ -332,6 +344,7 @@ export default function App() {
                   {e.latencyMs ? ` · ${e.latencyMs} ms` : ""}
                 </span>
                 <p>{e.reason}</p>
+                {e.error && <p className="log-error">Failed: {e.error}</p>}
               </div>
             </div>
           ))}

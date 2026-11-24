@@ -67,7 +67,12 @@ async function runModel(
       lastError = e;
       const msg = e instanceof Error ? e.message : String(e);
       const transient = /500|503|429|high demand|overloaded|try again later/i.test(msg);
-      if (!transient || attempt === 2) throw e;
+      if (!transient || attempt === 2) {
+        // Attach the routing decision so the UI can log failed attempts too —
+        // the routing log shows its work, including failures.
+        (e as { decision?: RoutingDecision }).decision = decision;
+        throw e;
+      }
       await new Promise((r) => setTimeout(r, attempt === 0 ? 2000 : 5000));
     }
   }
