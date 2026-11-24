@@ -1,8 +1,20 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import { firebaseConfigured } from "./lib/firebase";
-import { applyRewrite, completenessCheck, deepAudit, draftBrief, privacyScan, type RunResult } from "./lib/ai";
-import { detectIdentifiers, redactText } from "./lib/router";
+import {
+  applyRewrite,
+  completenessCheck,
+  deepAudit,
+  deviceModelStatus,
+  draftBrief,
+  initDeviceModel,
+  privacyScan,
+  type CloudGate,
+  type CloudGateInfo,
+  type DeviceModelStatus,
+  type RunResult,
+} from "./lib/ai";
+import { detectIdentifiers, redactText, route } from "./lib/router";
 import { listBriefs, saveBrief, type SavedBrief } from "./lib/briefs";
 
 interface LogEntry {
@@ -12,7 +24,17 @@ interface LogEntry {
   badge: string;
   latencyMs?: number;
   error?: string;
+  /** The exact payload sent to the model (post-redaction for cloud calls). */
+  payload?: string;
+  identifiers?: number;
 }
+
+interface QueuedAudit {
+  briefText: string;
+  queuedAt: string;
+}
+
+const QUEUE_KEY = "clearbrief-queued-audit";
 
 interface AuditFlag {
   clause: string;
@@ -53,23 +75,104 @@ export default function App() {
   const [privacy, setPrivacy] = useState<{ findings: { kind: string; excerpt: string; why: string }[]; safeToSendToCloud: boolean; summary: string } | null>(null);
   const [audit, setAudit] = useState<{ score: number; flags: AuditFlag[]; verdict: string } | null>(null);
   const [auditSentText, setAuditSentText] = useState<string | null>(null);
+  const [appliedClauses, setAppliedClauses] = useState<Set<string>>(new Set());
+  const [climbNote, setClimbNote] = useState<string | null>(null);
+  const [privacyGuidance, setPrivacyGuidance] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [hideHow, setHideHow] = useState(() => {
+    try {
+      return localStorage.getItem("clearbrief-hide-how") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [saved, setSaved] = useState<SavedBrief[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
+  const [nanoStatus, setNanoStatus] = useState<DeviceModelStatus>("unknown");
+  const [gate, setGate] = useState<{ info: CloudGateInfo; resolve: (ok: boolean) => void } | null>(null);
+  const [queuedAudit, setQueuedAudit] = useState<QueuedAudit | null>(() => {
+    try {
+      const raw = localStorage.getItem(QUEUE_KEY);
+      return raw ? (JSON.parse(raw) as QueuedAudit) : null;
+    } catch {
+      return null;
+    }
+  });
+  const flushingRef = useRef(false);
 
-  useEffect(() => {
-    const on = () => setOnline(true);
-    const off = () => setOnline(false);
-    window.addEventListener("online", on);
-    window.addEventListener("offline", off);
-    return () => {
-      window.removeEventListener("online", on);
-      window.removeEventListener("offline", off);
-    };
-  }, []);
+  // The human gate: AI calls that may reach the cloud pause here. The user
+  // sees the exact redacted payload and confirms before anything is sent.
+  const cloudGate: CloudGate = useCallback(
+    (info) =>
+      new Promise<boolean>((resolve) => {
+        setGate({ info, resolve });
+      }),
+    [],
+  );
 
   const pushLog = useCallback((entry: LogEntry) => {
     setLog((prev) => [entry, ...prev].slice(0, 30));
   }, []);
+
+  useEffect(() => {
+    deviceModelStatus().then(setNanoStatus).catch(() => setNanoStatus("unknown"));
+  }, []);
+
+  const flushQueuedAudit = useCallback(async () => {
+    if (flushingRef.current) return;
+    let item: QueuedAudit | null = null;
+    try {
+      const raw = localStorage.getItem(QUEUE_KEY);
+      item = raw ? (JSON.parse(raw) as QueuedAudit) : null;
+    } catch {
+      item = null;
+    }
+    if (!item || !navigator.onLine) return;
+    flushingRef.current = true;
+    try {
+      // The user confirmed this exact redacted payload at queue time.
+      const r = await deepAudit(item.briefText, { preConfirmed: true });
+      localStorage.removeItem(QUEUE_KEY);
+      setQueuedAudit(null);
+      if (r.json) setAudit(r.json as { score: number; flags: AuditFlag[]; verdict: string });
+      setAuditSentText(r.sentText);
+      pushLog({
+        at: new Date().toLocaleTimeString(),
+        task: "Deep audit (queued offline)",
+        reason: "Connectivity restored — the queued cloud audit ran automatically on reconnect.",
+        badge: sourceBadge(r),
+        latencyMs: r.latencyMs,
+        payload: r.sentText,
+        identifiers: r.decision.identifiers.length,
+      });
+    } catch (e) {
+      pushLog({
+        at: new Date().toLocaleTimeString(),
+        task: "Deep audit (queued offline)",
+        reason: "Reconnect flush failed; the audit stays queued for the next reconnect.",
+        badge: "Failed",
+        error: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      flushingRef.current = false;
+    }
+  }, [pushLog]);
+
+  useEffect(() => {
+    const on = () => {
+      setOnline(true);
+      void flushQueuedAudit();
+    };
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    // Also flush on load if we came back online with a queue pending.
+    void flushQueuedAudit();
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, [flushQueuedAudit]);
 
   const run = useCallback(
     async (label: string, fn: () => Promise<RunResult>, onOk: (r: RunResult) => void) => {
@@ -83,6 +186,8 @@ export default function App() {
           reason: r.decision.reason,
           badge: sourceBadge(r),
           latencyMs: r.latencyMs,
+          payload: r.sentText,
+          identifiers: r.decision.identifiers.length,
         });
         onOk(r);
       } catch (e) {
@@ -108,6 +213,103 @@ export default function App() {
   const localIdentifiers = detectIdentifiers(notes + "\n" + brief);
   const workingText = brief || notes;
 
+  // Score-climb loop: apply every remaining high-severity rewrite, then
+  // automatically re-check completeness so the improvement is visible.
+  const applyAllHigh = async () => {
+    if (!audit) return;
+    const highs = audit.flags.filter(
+      (f) => f.severity.toLowerCase() === "high" && !appliedClauses.has(f.clause),
+    );
+    if (highs.length === 0) return;
+    let current = brief;
+    setBusy("Applying rewrites");
+    setError(null);
+    try {
+      for (const f of highs) {
+        const r = await applyRewrite(current, f.clause, f.rewrite, cloudGate);
+        pushLog({
+          at: new Date().toLocaleTimeString(),
+          task: "Apply rewrite",
+          reason: r.decision.reason,
+          badge: sourceBadge(r),
+          latencyMs: r.latencyMs,
+          payload: r.sentText,
+          identifiers: r.decision.identifiers.length,
+        });
+        current = r.text;
+        setBrief(current);
+        setAppliedClauses((prev) => new Set(prev).add(f.clause));
+      }
+      const c = await completenessCheck(current, cloudGate);
+      pushLog({
+        at: new Date().toLocaleTimeString(),
+        task: "Completeness",
+        reason: c.decision.reason,
+        badge: sourceBadge(c),
+        latencyMs: c.latencyMs,
+        payload: c.sentText,
+        identifiers: c.decision.identifiers.length,
+      });
+      if (c.json) setCompleteness(c.json as { present: string[]; missing: string[]; summary: string });
+      setClimbNote(
+        "High-severity rewrites applied and completeness re-checked above. Run the deep audit again to see your new dispute-readiness score.",
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      const d = (e as { decision?: RunResult["decision"] }).decision;
+      if (d) {
+        pushLog({
+          at: new Date().toLocaleTimeString(),
+          task: "Apply rewrite",
+          reason: d.reason,
+          badge: "Failed",
+          error: msg,
+        });
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const exportBrief = (kind: "md" | "copy") => {
+    const lines = [
+      "# Job brief (via ClearBrief)",
+      "",
+      brief,
+      ...(audit
+        ? [
+            "",
+            `Dispute-readiness score: ${audit.score}/100`,
+            audit.verdict,
+            "",
+            "## Audit flags",
+            ...audit.flags.map(
+              (f) => `- [${f.severity}] "${f.clause}" — ${f.problem} Rewrite: ${f.rewrite}`,
+            ),
+          ]
+        : []),
+    ];
+    const text = lines.join("\n");
+    if (kind === "copy") {
+      navigator.clipboard
+        .writeText(text)
+        .then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        })
+        .catch(() => setError("Copy failed — select the brief text and copy it manually."));
+      return;
+    }
+    const blob = new Blob([text], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "clearbrief-brief.md";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="page">
       <header>
@@ -121,11 +323,115 @@ export default function App() {
           <span className={`pill ${firebaseConfigured ? "ok" : "warn"}`}>
             {firebaseConfigured ? "Firebase connected" : "Firebase not configured — add .env.local (see README)"}
           </span>
-          <span className="pill">Chrome desktop 139+ enables Gemini Nano on-device</span>
+          <span className={`pill ${nanoStatus === "available" ? "ok" : "warn"}`}>
+            Gemini Nano: {nanoStatus === "unknown" ? "checking…" : nanoStatus}
+          </span>
+          <button
+            className="ghost"
+            disabled={busy !== null}
+            onClick={async () => {
+              setBusy("Initialize on-device model");
+              setError(null);
+              try {
+                const msg = await initDeviceModel(setNanoStatus);
+                pushLog({
+                  at: new Date().toLocaleTimeString(),
+                  task: "Initialize on-device model",
+                  reason: msg,
+                  badge: "On-device",
+                });
+              } catch (e) {
+                const m = e instanceof Error ? e.message : String(e);
+                setError(m);
+                pushLog({
+                  at: new Date().toLocaleTimeString(),
+                  task: "Initialize on-device model",
+                  reason: "Initialization attempted from a user click, as the hybrid SDK requires.",
+                  badge: "Failed",
+                  error: m,
+                });
+              } finally {
+                setBusy(null);
+                deviceModelStatus().then(setNanoStatus).catch(() => {});
+              }
+            }}
+          >
+            {busy === "Initialize on-device model" ? "Initializing…" : "Initialize on-device model"}
+          </button>
         </div>
+        {queuedAudit && (
+          <p className="warn-text">
+            ⏳ 1 deep audit queued (requested offline at {queuedAudit.queuedAt}). It will run automatically when you
+            reconnect — the redacted payload you confirmed is what gets sent.
+          </p>
+        )}
       </header>
 
+      {gate && (
+        <section className="card gate">
+          <h2>Confirm cloud send — {gate.info.task}</h2>
+          <p>
+            This step runs in the cloud. Below is the <strong>exact text</strong> that will be sent — identifiers
+            found locally ({gate.info.identifiers.length}
+            {gate.info.identifiers.length > 0
+              ? `: ${[...new Set(gate.info.identifiers.map((i) => i.kind))].join(", ")}`
+              : ""}
+            ) have been replaced with placeholders. Raw text never leaves this device.
+          </p>
+          <pre>{gate.info.redactedText}</pre>
+          <div className="row">
+            <button
+              onClick={() => {
+                gate.resolve(true);
+                setGate(null);
+              }}
+            >
+              Send redacted version
+            </button>
+            <button
+              className="ghost"
+              onClick={() => {
+                gate.resolve(false);
+                setGate(null);
+              }}
+            >
+              Cancel — send nothing
+            </button>
+          </div>
+        </section>
+      )}
+
       <main>
+        {!hideHow && (
+          <section className="card how">
+            <div className="row spread">
+              <h2>How this works</h2>
+              <button
+                className="ghost"
+                onClick={() => {
+                  setHideHow(true);
+                  try {
+                    localStorage.setItem("clearbrief-hide-how", "1");
+                  } catch {
+                    // dismissal just won't persist
+                  }
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+            <p>
+              ClearBrief splits the work between two models by trust: the on-device model handles your raw text
+              because it never transmits it; the cloud model does the heavy audit but only sees a redacted copy you
+              confirm first.
+            </p>
+            <ul>
+              <li>Draft and check completeness — on-device first.</li>
+              <li>Deep audit — cloud, redacted, after your confirmation.</li>
+              <li>The routing log below shows every decision and where each call actually ran.</li>
+            </ul>
+          </section>
+        )}
         <section className="card">
           <h2>1 · Rough notes</h2>
           <textarea
@@ -148,11 +454,17 @@ export default function App() {
               cloud audit will only receive a redacted copy.
             </p>
           )}
+          {notes.trim().length > 0 && notes.trim().length < 40 && (
+            <p className="hint">
+              These notes are very short — a draft from them will have gaps. Adding who it's for, exactly what
+              "done" looks like, a date, and a price makes the brief much stronger.
+            </p>
+          )}
           <div className="row">
             <button
               disabled={!notes || busy !== null}
               onClick={() =>
-                run("Draft brief", () => draftBrief(notes), (r) => {
+                run("Draft brief", () => draftBrief(notes, cloudGate), (r) => {
                   // The cloud fallback model does not always honour the
                   // response schema's field names — extract defensively.
                   const j = (r.json ?? {}) as Record<string, unknown>;
@@ -178,7 +490,7 @@ export default function App() {
               disabled={!workingText || busy !== null}
               className="ghost"
               onClick={() =>
-                run("Completeness", () => completenessCheck(workingText), (r) => {
+                run("Completeness", () => completenessCheck(workingText, cloudGate), (r) => {
                   if (r.json) setCompleteness(r.json as { present: string[]; missing: string[]; summary: string });
                 })
               }
@@ -188,8 +500,21 @@ export default function App() {
             <button
               disabled={!workingText || busy !== null}
               className="ghost"
-              onClick={() =>
-                run("Privacy scan", () => privacyScan(workingText), (r) => {
+              onClick={async () => {
+                setPrivacyGuidance(false);
+                setBusy("Privacy scan");
+                setError(null);
+                try {
+                  const r = await privacyScan(workingText);
+                  pushLog({
+                    at: new Date().toLocaleTimeString(),
+                    task: "Privacy scan",
+                    reason: r.decision.reason,
+                    badge: sourceBadge(r),
+                    latencyMs: r.latencyMs,
+                    payload: r.sentText,
+                    identifiers: r.decision.identifiers.length,
+                  });
                   if (r.json)
                     setPrivacy(
                       r.json as {
@@ -198,10 +523,32 @@ export default function App() {
                         summary: string;
                       },
                     );
-                })
-              }
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  const d = (e as { decision?: RunResult["decision"] }).decision;
+                  if (d) {
+                    pushLog({
+                      at: new Date().toLocaleTimeString(),
+                      task: "Privacy scan",
+                      reason: d.reason,
+                      badge: "Failed",
+                      error: msg,
+                    });
+                  }
+                  // The scan is on-device ONLY by design: without Nano it
+                  // cannot run, and it will not fall back to the cloud. Give
+                  // the user the way forward instead of a dead end.
+                  if (/not available|api-not-enabled|LanguageModel/i.test(msg)) {
+                    setPrivacyGuidance(true);
+                  } else {
+                    setError(msg);
+                  }
+                } finally {
+                  setBusy(null);
+                }
+              }}
             >
-              Privacy scan (on-device only)
+              {busy === "Privacy scan" ? "Scanning…" : "Privacy scan (on-device only)"}
             </button>
           </div>
         </section>
@@ -215,6 +562,23 @@ export default function App() {
               <p>{completeness.summary}</p>
               {completeness.present.length > 0 && <p>Present: {completeness.present.join(" · ")}</p>}
               {completeness.missing.length > 0 && <p className="warn-text">Missing: {completeness.missing.join(" · ")}</p>}
+            </div>
+          )}
+          {privacyGuidance && (
+            <div className="result">
+              <h3>Privacy scan needs the on-device model</h3>
+              <p>
+                Gemini Nano isn't available in this browser, and the privacy scan is on-device only by design — it
+                will never send your text to the cloud to scan it. You're not stuck:
+              </p>
+              <p>
+                · The local identifier check (no AI, no network) already flags emails, payment handles, addresses
+                and more — see the note under your notes.
+                <br />
+                · To run the full scan: enable Nano in Chrome (flag in the README), then click "Initialize
+                on-device model" in the header.
+                <br />· The deep audit below still only ever receives the redacted copy you confirm.
+              </p>
             </div>
           )}
           {privacy && (
@@ -232,21 +596,53 @@ export default function App() {
           <div className="row">
             <button
               disabled={!brief || busy !== null}
-              onClick={() =>
-                run("Deep audit", () => deepAudit(brief), (r) => {
-                  if (r.json) setAudit(r.json as { score: number; flags: AuditFlag[]; verdict: string });
-                  setAuditSentText(r.sentText);
-                  if ((r as { queued?: boolean }).queued) {
+              onClick={async () => {
+                // Offline: don't run a demoted local pass and call it an audit.
+                // Gate the redacted payload now, queue it visibly, and flush
+                // automatically on reconnect.
+                const decision = route("deep-audit", brief);
+                if (decision.queuedForCloud) {
+                  const { redacted } = redactText(brief, decision.identifiers);
+                  const ok = await cloudGate({
+                    task: "deep-audit (offline — will queue)",
+                    redactedText: redacted,
+                    identifiers: decision.identifiers,
+                  });
+                  if (!ok) {
                     pushLog({
                       at: new Date().toLocaleTimeString(),
-                      task: "Deep audit queued",
-                      reason:
-                        "Offline: the full cloud audit will be available when you reconnect. The local pass is what runs offline.",
-                      badge: "Queued",
+                      task: "Deep audit",
+                      reason: decision.reason,
+                      badge: "Failed",
+                      error: "Cloud send cancelled — you declined to queue the redacted copy.",
                     });
+                    return;
                   }
-                })
-              }
+                  const item: QueuedAudit = { briefText: brief, queuedAt: new Date().toLocaleTimeString() };
+                  try {
+                    localStorage.setItem(QUEUE_KEY, JSON.stringify(item));
+                  } catch {
+                    // storage unavailable — the queue still shows for this session
+                  }
+                  setQueuedAudit(item);
+                  pushLog({
+                    at: new Date().toLocaleTimeString(),
+                    task: "Deep audit queued",
+                    reason:
+                      "Offline: audit queued with your confirmed redacted payload. It runs automatically when you reconnect.",
+                    badge: "Queued",
+                    payload: redacted,
+                    identifiers: decision.identifiers.length,
+                  });
+                  return;
+                }
+                run("Deep audit", () => deepAudit(brief, { gate: cloudGate }), (r) => {
+                  if (r.json) setAudit(r.json as { score: number; flags: AuditFlag[]; verdict: string });
+                  setAuditSentText(r.sentText);
+                  setAppliedClauses(new Set());
+                  setClimbNote(null);
+                });
+              }}
             >
               {busy === "Deep audit" ? "Auditing…" : "Deep dispute-readiness audit (cloud, redacted)"}
             </button>
@@ -276,11 +672,25 @@ export default function App() {
             >
               Load my library
             </button>
+            <button className="ghost" disabled={!brief} onClick={() => exportBrief("md")}>
+              Download brief (.md)
+            </button>
+            <button className="ghost" disabled={!brief} onClick={() => exportBrief("copy")}>
+              {copied ? "Copied ✓" : "Copy brief"}
+            </button>
           </div>
           {audit && (
             <div className="result">
               <h3>Dispute-readiness: {audit.score}/100</h3>
               <p>{audit.verdict}</p>
+              {audit.flags.some((f) => f.severity.toLowerCase() === "high" && !appliedClauses.has(f.clause)) && (
+                <div className="row">
+                  <button disabled={busy !== null} onClick={() => void applyAllHigh()}>
+                    {busy === "Applying rewrites" ? "Applying…" : "Apply all high-severity rewrites"}
+                  </button>
+                </div>
+              )}
+              {climbNote && <p className="hint">{climbNote}</p>}
               {audit.flags.map((f, i) => (
                 <div key={i} className="flag">
                   <p>
@@ -292,12 +702,15 @@ export default function App() {
                   </p>
                   <button
                     className="ghost"
-                    disabled={busy !== null}
+                    disabled={busy !== null || appliedClauses.has(f.clause)}
                     onClick={() =>
-                      run("Apply rewrite", () => applyRewrite(brief, f.clause, f.rewrite), (r) => setBrief(r.text))
+                      run("Apply rewrite", () => applyRewrite(brief, f.clause, f.rewrite, cloudGate), (r) => {
+                        setBrief(r.text);
+                        setAppliedClauses((prev) => new Set(prev).add(f.clause));
+                      })
                     }
                   >
-                    Apply this rewrite
+                    {appliedClauses.has(f.clause) ? "Applied ✓" : "Apply this rewrite"}
                   </button>
                 </div>
               ))}
@@ -344,6 +757,17 @@ export default function App() {
                   {e.latencyMs ? ` · ${e.latencyMs} ms` : ""}
                 </span>
                 <p>{e.reason}</p>
+                {typeof e.identifiers === "number" && (
+                  <p className="hint">
+                    {e.identifiers} identifier{e.identifiers === 1 ? "" : "s"} found locally before this call.
+                  </p>
+                )}
+                {e.payload && (
+                  <details>
+                    <summary>Payload sent ({e.payload.length} chars)</summary>
+                    <pre>{e.payload}</pre>
+                  </details>
+                )}
                 {e.error && <p className="log-error">Failed: {e.error}</p>}
               </div>
             </div>

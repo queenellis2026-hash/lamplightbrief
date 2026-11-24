@@ -22,7 +22,7 @@ import { InferenceMode } from "firebase/ai";
 export type TaskKind = "draft" | "completeness" | "privacy-scan" | "rewrite" | "deep-audit";
 
 export interface DetectedIdentifier {
-  kind: "email" | "phone" | "payment-handle" | "url-with-token" | "address";
+  kind: "email" | "phone" | "payment-handle" | "url-with-token" | "address" | "crypto-address";
   value: string;
   index: number;
 }
@@ -45,6 +45,7 @@ const PATTERNS: { kind: DetectedIdentifier["kind"]; re: RegExp }[] = [
   { kind: "payment-handle", re: /(\$[a-zA-Z][a-zA-Z0-9_-]{2,}|@[a-zA-Z][a-zA-Z0-9_]{2,}\s*(venmo|cash ?app|zelle|paypal))/gi },
   { kind: "url-with-token", re: /https?:\/\/\S*(token|key|sig|auth)=\S+/gi },
   { kind: "address", re: /\b\d{1,6}\s+[A-Z][a-zA-Z]+\s+(Ln|Lane|St|Street|Ave|Avenue|Blvd|Rd|Road|Dr|Drive)\b/g },
+  { kind: "crypto-address", re: /\b0x[0-9a-fA-F]{40}\b/g },
 ];
 
 /** Deterministic local detectors — plain rules, no AI, no network. */

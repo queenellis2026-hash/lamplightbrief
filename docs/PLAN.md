@@ -59,6 +59,14 @@ User pastes rough notes for a job. ClearBrief turns them into a brief a third pa
 - **Sun Nov 29** — Final verification: repo license detectable, hosted URL live, video public, Devpost form complete. Submit by end of day Nov 29 — **a full day early**.
 - **Mon Nov 30** — Deadline day is contingency only. Verify Devpost page shows Submitted; no commits after 4 PM CT lock.
 
+## Execution log (Nov 24)
+- Firebase project clearbrief-hybrid reused (created by the stopped run); Spark free; AI Logic (Gemini Developer API) + App Check (reCAPTCHA Enterprise, enforced) + Firestore (nam5) + Anonymous Auth + per-user rules — all live.
+- App built (Vite/React/TS, Firebase SDK 13.4.0), deployed to https://clearbrief-hybrid.web.app; verified end-to-end in a real browser over three passes: draft renders readable prose; audit scored the vague sample 5/100 with 5 HIGH flags; redaction viewer shows [EMAIL_1]/[PAYMENT_HANDLE_1]; privacy scan errors cleanly on-device-only when Nano is absent; Firestore save/load works.
+- Live-verification catches, fixed and redeployed: gemini-2.5-flash-lite retired for new users → gemini-3.5-flash-lite; cloud models wrap JSON in code fences → parser strips them; transient 500s → retry with backoff + fallback to default cloud model; routing log now records failed attempts.
+- Repo: https://github.com/queenellis2026-hash/clearbrief (Apache-2.0 detected), HEAD 63ab564.
+- Devpost draft created: submission 1319067-clearbrief, 3/5 steps — everything filled except the demo video URL (the only blocker). Draft NOT submitted.
+- CLI quirk worth remembering: firebase-tools configstore chown fails on this VM's home FS — run the CLI with HOME=/tmp/fbhome.
+
 ## Risks / open items
 - Firebase project creation is done in the Firebase console under Ellis's Google account (queenellis2026@gmail.com) — try Ellis's own route first; flag to main only if a step is genuinely human-gated (e.g. a verification Chris must do), with exact steps.
 - Gemini Nano availability depends on the test Chrome's model download; the app must be fully demoable on cloud fallback alone, and the video must show the on-device path actually firing (inferenceSource badge) — record on a Chrome profile where Nano is confirmed `available` first.

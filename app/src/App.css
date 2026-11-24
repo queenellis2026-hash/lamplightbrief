@@ -157,3 +157,17 @@ footer {
   color: var(--text);
   font-size: 14px;
 }
+
+.gate { border: 2px solid #b26a00; }
+.gate pre { max-height: 220px; overflow: auto; }
+
+.row.spread { justify-content: space-between; align-items: center; }
+.how ul { margin: 6px 0 0; padding-left: 20px; }
+.how h2 { margin: 0; }
+
+@media (max-width: 640px) {
+  .row { flex-wrap: wrap; }
+  .log-entry { flex-direction: column; gap: 4px; }
+  .status-row { flex-wrap: wrap; }
+  textarea { width: 100%; }
+}
