@@ -18,7 +18,7 @@ All AI inference goes through **Firebase AI Logic** (`firebase/ai`) — Gemini N
 A **custom router** (`app/src/lib/router.ts`) decides where each request runs, in this order, and the UI's routing log shows its reasoning plus the SDK's own `inferenceSource` report for every call:
 
 1. **Sensitivity** — deterministic local detectors + the on-device privacy scan run first. Identifiers are redacted before any cloud call.
-2. **Complexity** — short structured tasks (draft, completeness, rewrite) use `InferenceMode.PREFER_ON_DEVICE` / `ONLY_ON_DEVICE`; the dispute-readiness audit uses `PREFER_IN_CLOUD` with `gemini-2.5-flash-lite`.
+2. **Complexity** — short structured tasks (draft, completeness, rewrite) use `InferenceMode.PREFER_ON_DEVICE` / `ONLY_ON_DEVICE`; the dispute-readiness audit uses `PREFER_IN_CLOUD` with `gemini-3.5-flash-lite`.
 3. **Connectivity** — offline demotes cloud work to a local pass and queues the audit.
 4. **Availability** — the SDK falls back automatically; the badge reports where the model *actually* ran.
 

@@ -26,7 +26,7 @@ function modelFor(mode: InferenceMode, jsonSchema?: object): GenerativeModel | n
   return getGenerativeModel(ai, {
     mode,
     ...(mode === InferenceMode.PREFER_IN_CLOUD || mode === InferenceMode.ONLY_IN_CLOUD
-      ? { inCloudParams: { model: "gemini-2.5-flash-lite" } }
+      ? { inCloudParams: { model: "gemini-3.5-flash-lite" } }
       : {}),
     ...(jsonSchema
       ? {

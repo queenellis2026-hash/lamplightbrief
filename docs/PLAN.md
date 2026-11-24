@@ -27,7 +27,7 @@ User pastes rough notes for a job. ClearBrief turns them into a brief a third pa
    - Why on-device: job notes routinely contain names, rates, private business details. Private, free, works offline. Nothing leaves the browser for this pass.
 2. **Privacy scan — ON-DEVICE ONLY** (`ONLY_ON_DEVICE`)
    - Flags emails, payment handles, addresses, and other identifiers in the draft *before* any cloud pass, so the user can redact first. This is the non-obvious hybrid move: the small local model is trusted with raw text precisely because it never transmits it.
-3. **Deep dispute-readiness audit — CLOUD** (`PREFER_IN_CLOUD`, inCloudParams: gemini-2.5-flash-lite class model, free tier)
+3. **Deep dispute-readiness audit — CLOUD** (`PREFER_IN_CLOUD`, inCloudParams: gemini-3.5-flash-lite class model, free tier)
    - Long-context risk audit the on-device model is too small for: ambiguous acceptance criteria, scope-creep openings, missing evidence terms, contradictory deadlines/budget, unfair or un-rulable clauses.
    - Output: dispute-readiness score (0–100), flagged clauses with quoted text, and concrete rewrite suggestions the user can apply with one click.
 4. **Inference transparency (judging surface)**

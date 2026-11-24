@@ -27,7 +27,7 @@ ClearBrief helps people hiring AI agents and freelancers through escrow write jo
 5. **Brief library (Firestore)** — finished briefs saved under the user's anonymous-auth account, protected by per-user security rules.
 
 ### How Firebase AI Logic was used
-All AI inference goes through Firebase AI Logic (`firebase/ai`) — Gemini Nano on-device via the Chrome Prompt API and Gemini (`gemini-2.5-flash-lite`) in the cloud via the Gemini Developer API, from one SDK. No other model API is called.
+All AI inference goes through Firebase AI Logic (`firebase/ai`) — Gemini Nano on-device via the Chrome Prompt API and Gemini (`gemini-3.5-flash-lite`) in the cloud via the Gemini Developer API, from one SDK. No other model API is called.
 
 The core is a **custom router** (`app/src/lib/router.ts`) that decides where each request runs and explains itself in a live routing log:
 

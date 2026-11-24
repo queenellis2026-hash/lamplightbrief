@@ -141,8 +141,22 @@ export default function App() {
               disabled={!notes || busy !== null}
               onClick={() =>
                 run("Draft brief", () => draftBrief(notes), (r) => {
-                  const j = r.json as { briefText?: string } | undefined;
-                  setBrief(j?.briefText || r.text);
+                  // The cloud fallback model does not always honour the
+                  // response schema's field names — extract defensively.
+                  const j = (r.json ?? {}) as Record<string, unknown>;
+                  const direct = [j.briefText, j.brief, j.text, j.content].find(
+                    (v): v is string => typeof v === "string" && v.length > 0,
+                  );
+                  if (direct) {
+                    setBrief(direct);
+                  } else if (r.json) {
+                    const lines = Object.entries(j)
+                      .filter(([, v]) => v !== "" && !(Array.isArray(v) && v.length === 0))
+                      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join("; ") : String(v)}`);
+                    setBrief(lines.join("\n"));
+                  } else {
+                    setBrief(r.text);
+                  }
                 })
               }
             >
