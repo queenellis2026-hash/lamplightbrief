@@ -80,6 +80,7 @@ Applying the three high-severity rewrites and re-auditing scored **60/100**.
 ## Known limitations (stated plainly)
 
 - **Names are not reliably detectable by pattern matching**, and the detectors do not claim to catch them. The mitigation is the human gate: before anything is transmitted, you see the exact payload and can cancel. Detector coverage today: emails, money amounts ($ figures, USD amounts, per-hour rates), phone numbers, payment handles, token-bearing URLs, US street addresses, and 0x crypto addresses.
+- **Audit scores vary between runs** — the audit is a model judgement, so the same brief can score somewhat differently on a re-run; the rubric and quoted clauses are the stable part.
 - The audit judges the brief you give it; applying rewrites with Nano unavailable sends the redacted brief (placeholders restored locally in the result), so a rewrite can occasionally smooth over a placeholder instead of the original wording.
 
 ## Run it locally

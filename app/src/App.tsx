@@ -225,7 +225,14 @@ export default function App() {
     [pushLog],
   );
 
-  const localIdentifiers = detectIdentifiers(notes + "\n" + brief);
+  // Count each distinct identifier once (kind + value), even when the same
+  // identifier appears in both the notes and the drafted brief — the header
+  // must agree with the confirmation panels in every state.
+  const localIdentifiers = [
+    ...new Map(
+      detectIdentifiers(notes + "\n" + brief).map((i) => [`${i.kind}:${i.value}`, i]),
+    ).values(),
+  ];
   const workingText = brief || notes;
 
   // Score-climb loop: apply every remaining high-severity rewrite, then
